@@ -100,7 +100,7 @@ impl PML5Entry {
 
     #[must_use]
     pub const fn phys_addr(self) -> usize {
-        self.page_addr() >> 12
+        self.page_addr() << 12
     }
 }
 
@@ -249,7 +249,7 @@ impl PML4Entry {
     }
     #[must_use]
     pub const fn phys_addr(self) -> usize {
-        self.page_addr() >> 12
+        self.page_addr() << 12
     }
 }
 
@@ -396,7 +396,7 @@ impl PDPTEntry {
     }
     #[must_use]
     pub const fn phys_addr(self) -> usize {
-        self.page_addr() >> 12
+        self.page_addr() << 12
     }
 }
 
@@ -532,7 +532,7 @@ impl PDEntry {
     }
     #[must_use]
     pub const fn phys_addr(self) -> usize {
-        self.page_addr() >> 12
+        self.page_addr() << 12
     }
 }
 
@@ -648,7 +648,7 @@ pub struct PTEntry {
 impl PTEntry {
     #[must_use]
     pub const fn phys_addr(self) -> usize {
-        self.page_addr() >> 12
+        self.page_addr() << 12
     }
 }
 

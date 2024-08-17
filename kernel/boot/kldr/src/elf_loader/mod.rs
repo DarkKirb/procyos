@@ -165,7 +165,7 @@ pub fn load(
         jump_thunk as *const () as usize,
         false,
         true,
-    );
+    )?;
 
     info!("Allocating the CMA area");
     let cma_ptr = bump
@@ -249,7 +249,7 @@ pub fn load(
             final_info.as_ptr().cast::<u8>() as usize,
             false,
             false,
-        );
+        )?;
     }
 
     // All bets are off.
