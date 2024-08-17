@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cargo = "0.81.0"
+clap = { version = "4.5.15", features = ["derive"] }
+eyre = "0.6.12"
+rand = "0.8.5"
+twelf = { version = "0.1.0", path = "../formats/twelf", features = ["alloc"] }

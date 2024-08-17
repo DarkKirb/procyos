@@ -1,0 +1,15 @@
+[alias]
+xtask = "run --package xtask --"
+
+[build]
+rustflags = ["-Csymbol-mangling-version=v0"]
+
+[unstable]
+build-std-features = ["compiler-builtins-mem"]
+#build-std = ["core", "compiler_builtins", "alloc"]
+
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "link-args=/debug:dwarf"]
+
+[target.x86_64-kernel-procyos]
+rustflags = ["-C", "link-args=-Tkernel/arch/x86_64/linker.ld"]

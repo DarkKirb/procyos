@@ -1,0 +1,12 @@
+[package]
+name = "miniser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
+
+[lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+module-name-repetitions = "allow"

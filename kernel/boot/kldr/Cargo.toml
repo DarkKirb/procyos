@@ -1,0 +1,42 @@
+[package]
+name = "kldr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+elf = { version = "0.7.4", default-features = false, features = ["nightly"] }
+log = "0.4.22"
+phf = { version = "0.11.2", default-features = false }
+spin = "0.9.8"
+twelf = { version = "0.1.0", path = "../../../formats/twelf", features = [
+    "picker",
+] }
+uefi = { version = "0.30.0", features = [
+    "alloc",
+    "global_allocator",
+    "logger",
+] }
+uefi-rand = { version = "0.1.0", path = "../uefi/uefi-rand" }
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
+rand = { version = "0.8.5", default-features = false }
+startup-info = { version = "0.1.0", path = "../../proto/startup-info" }
+miniser = { version = "0.1.0", path = "../../../formats/miniser" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+kernel_arch_x86_64 = { version = "0.1.0", path = "../../arch/x86_64" }
+raw-cpuid = "11.1.0"
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { version = "0.30.0", features = ["panic_handler"] }
+
+[build-dependencies]
+phf_codegen = "0.11.2"
+twelf = { version = "0.1.0", path = "../../../formats/twelf", features = [
+    "alloc",
+] }
+
+
+[lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+module-name-repetitions = "allow"

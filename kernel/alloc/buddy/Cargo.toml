@@ -1,0 +1,24 @@
+[package]
+name = "buddy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitvec = { version = "1.0.1", default-features = false, features = [
+    "atomic",
+    "alloc",
+] }
+log = "0.4.22"
+
+[features]
+pagesize_64k = []
+pagesize_16k = []
+pagesize_4k = []
+pagesize_1k = []
+
+default = ["pagesize_4k"]
+
+[lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+module-name-repetitions = "allow"
