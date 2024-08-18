@@ -149,7 +149,7 @@ fn generate_keypair(secrets_directory: Option<String>) -> Result<()> {
         private_key.serialize()?,
     )?;
 
-    let public_key = private_key.public_key();
+    let public_key = private_key.verifying_key();
 
     let public_key_file = secrets_directory.join("twelf_public_key");
 

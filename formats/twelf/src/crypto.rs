@@ -1,16 +1,19 @@
 //! TWELF signature algorithm
 
-use core::hash::Hasher;
+use core::{hash::Hasher, hint::black_box};
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-use ed25519_dalek::{ed25519::signature::SignerMut, SignatureError, SigningKey, VerifyingKey};
+use ed25519_dalek::SignatureError;
 #[cfg(feature = "alloc")]
-use fallible_collections::{TryCollect, TryReserveError};
+use fallible_collections::TryReserveError;
 use phf::PhfHash;
 use phf_shared::{FmtConst, PhfBorrow};
 use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
+
+pub mod ed25519;
+pub mod slh_dsa;
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
@@ -22,7 +25,7 @@ pub enum CryptoError {
     #[error("Invalid signature buffer size {0} (expected {1} bytes)")]
     InvalidSignatureSize(usize, usize),
     #[error("Invalid Ed25519 Signature: {0}")]
-    InvalidSignatureEd25519(SignatureError),
+    InvalidSignature(SignatureError),
     #[error("Invalid public key format {0} (expected 2)")]
     InvalidPublicKeyFormat(u8),
     #[error("Ed25519 Public key was invalid")]
@@ -32,20 +35,34 @@ pub enum CryptoError {
     #[cfg(feature = "alloc")]
     #[error("Failed to allocate memory: {0}")]
     FailedAllocation(#[from] TryReserveError),
+    #[error("Signature error: {0}")]
+    Ed25519Error(ed25519_dalek::ed25519::Error),
+    #[error("Signature is invalid.")]
+    InvalidCombinedSignature,
 }
 
-pub const SIGNING_KEY_LENGTH: usize = 1 + ed25519_dalek::SECRET_KEY_LENGTH;
-pub const VERIFYING_KEY_LENGTH: usize = 1 + ed25519_dalek::PUBLIC_KEY_LENGTH;
-pub const SIGNATURE_LENGTH: usize = ed25519_dalek::SIGNATURE_LENGTH;
+impl From<ed25519_dalek::ed25519::Error> for CryptoError {
+    fn from(value: ed25519_dalek::ed25519::Error) -> Self {
+        Self::Ed25519Error(value)
+    }
+}
+
+pub const SIGNING_KEY_LENGTH: usize = 1 + ed25519::SIGNING_KEY_LENGTH + slh_dsa::SIGNING_KEY_LENGTH;
+pub const VERIFYING_KEY_LENGTH: usize =
+    1 + ed25519::VERIFYING_KEY_LENGTH + slh_dsa::VERIFYING_KEY_LENGTH;
+pub const SIGNATURE_LENGTH: usize = ed25519::SIGNATURE_LENGTH + slh_dsa::SIGNATURE_LENGTH;
 
 /// The private signing key used for signing files.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct PrivateSigningKey(SigningKey);
+pub struct PrivateSigningKey(ed25519::SigningKey, slh_dsa::SigningKey);
 
 impl PrivateSigningKey {
     /// Generates a new private signing key using the provided random number generator.
     pub fn generate<R: RngCore + CryptoRng>(rand: &mut R) -> Self {
-        Self(SigningKey::generate(rand))
+        Self(
+            ed25519::SigningKey::generate(rand),
+            slh_dsa::SigningKey::generate(rand),
+        )
     }
 
     /// Serializes the private signing key into the provided buffer.
@@ -59,8 +76,11 @@ impl PrivateSigningKey {
                 SIGNING_KEY_LENGTH,
             ));
         }
-        buf[0] = 0x01; // Private key format
-        buf[1..].copy_from_slice(self.0.as_bytes());
+        buf[0] = 0x04; // Private key format
+        self.0
+            .serialize_into(&mut buf[1..=ed25519::SIGNING_KEY_LENGTH])?;
+        self.1
+            .serialize_into(&mut buf[1 + ed25519::SIGNING_KEY_LENGTH..])?;
         Ok(())
     }
 
@@ -70,9 +90,9 @@ impl PrivateSigningKey {
     /// Returns an error if the allocation fails.
     #[cfg(feature = "alloc")]
     pub fn serialize(&self) -> Result<Vec<u8>, CryptoError> {
-        let mut buf = [0u8; SIGNING_KEY_LENGTH];
+        let mut buf = alloc::vec![0u8; SIGNING_KEY_LENGTH];
         self.serialize_into(&mut buf)?;
-        Ok(buf.try_collect()?)
+        Ok(buf)
     }
 
     /// Deserializes a private signing key from the provided buffer.
@@ -86,16 +106,18 @@ impl PrivateSigningKey {
                 SIGNING_KEY_LENGTH,
             ));
         }
-        if buf[0] != 0x01 {
+        if buf[0] != 0x04 {
             return Err(CryptoError::InvalidPrivateKeyFormat(buf[0]));
         }
-        let mut secret_key = [0u8; ed25519_dalek::SECRET_KEY_LENGTH];
-        secret_key.copy_from_slice(&buf[1..]);
-        Ok(Self(SigningKey::from_bytes(&secret_key)))
+        let (ed25519_sk, slh_dsa_sk) = buf[1..].split_at(ed25519::SIGNING_KEY_LENGTH);
+        Ok(Self(
+            ed25519::SigningKey::deserialize(ed25519_sk)?,
+            slh_dsa::SigningKey::deserialize(slh_dsa_sk)?,
+        ))
     }
 
     /// Signs a message using the private signing key.
-    /// 
+    ///
     /// # Errors
     /// This function returns an error if the provided buffer doesn’t fit the signature.
     pub fn sign_into(
@@ -109,8 +131,10 @@ impl PrivateSigningKey {
                 SIGNATURE_LENGTH,
             ));
         }
-        let sig = self.0.sign(message);
-        signature_buf.copy_from_slice(&sig.to_bytes());
+        self.0
+            .sign_into(message, &mut signature_buf[..ed25519::SIGNATURE_LENGTH])?;
+        self.1
+            .sign_into(message, &mut signature_buf[ed25519::SIGNATURE_LENGTH..])?;
         Ok(())
     }
 
@@ -120,20 +144,20 @@ impl PrivateSigningKey {
     /// Returns an error if the allocation fails.
     #[cfg(feature = "alloc")]
     pub fn sign(&mut self, message: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let mut buf = [0u8; SIGNATURE_LENGTH];
+        let mut buf = alloc::vec![0u8; SIGNATURE_LENGTH];
         self.sign_into(message, &mut buf)?;
-        Ok(buf.try_collect()?)
+        Ok(buf)
     }
 
     /// Calculates the public key derived from the private signing key.
     #[must_use]
-    pub fn public_key(&self) -> PublicVerifyingKey {
-        PublicVerifyingKey(self.0.verifying_key())
+    pub fn verifying_key(&self) -> PublicVerifyingKey {
+        PublicVerifyingKey(self.0.verifying_key(), self.1.verifying_key())
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct PublicVerifyingKey(ed25519_dalek::VerifyingKey);
+pub struct PublicVerifyingKey(ed25519::VerifyingKey, slh_dsa::VerifyingKey);
 
 impl PublicVerifyingKey {
     /// Verifies the attached signature of a message using the public verifying key.
@@ -154,14 +178,14 @@ impl PublicVerifyingKey {
     ///
     /// This function returns an error if the message has been tampered with.
     pub fn verify_detached(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
-        let sig: [u8; SIGNATURE_LENGTH] = signature
-            .try_into()
-            .map_err(|_| CryptoError::InvalidBufferSize(signature.len(), SIGNATURE_LENGTH))?;
-        let sig = ed25519_dalek::Signature::from_bytes(&sig);
-        self.0
-            .verify_strict(message, &sig)
-            .map_err(CryptoError::InvalidSignatureEd25519)?;
-        Ok(())
+        let (ed25519_sig, slh_dsa_sig) = signature.split_at(ed25519::SIGNATURE_LENGTH);
+        let res1 = self.0.verify_detached(message, ed25519_sig).is_ok();
+        let res2 = self.1.verify_detached(message, slh_dsa_sig).is_ok();
+        if black_box(black_box(res1) && black_box(res2)) {
+            Ok(())
+        } else {
+            Err(CryptoError::InvalidCombinedSignature)
+        }
     }
 
     /// Serializes the public verifying key into the provided buffer.
@@ -175,8 +199,10 @@ impl PublicVerifyingKey {
                 VERIFYING_KEY_LENGTH,
             ));
         }
-        buf[0] = 0x02; // Public key format
-        buf[1..].copy_from_slice(self.0.as_bytes());
+        buf[0] = 0x05; // Public key format
+        let (ed25519_vk, slh_dsa_vk) = buf[1..].split_at_mut(ed25519::VERIFYING_KEY_LENGTH);
+        self.0.serialize_into(ed25519_vk)?;
+        self.1.serialize_into(slh_dsa_vk)?;
         Ok(())
     }
 
@@ -186,9 +212,9 @@ impl PublicVerifyingKey {
     /// Function returns an error if the allocation fails.
     #[cfg(feature = "alloc")]
     pub fn serialize(&self) -> Result<Vec<u8>, CryptoError> {
-        let mut buf = [0u8; VERIFYING_KEY_LENGTH];
+        let mut buf = alloc::vec![0u8; VERIFYING_KEY_LENGTH];
         self.serialize_into(&mut buf)?;
-        Ok(buf.try_collect()?)
+        Ok(buf)
     }
 
     /// Deserializes a public verifying key from the provided buffer.
@@ -202,19 +228,24 @@ impl PublicVerifyingKey {
                 VERIFYING_KEY_LENGTH,
             ));
         }
-        if buf[0] != 0x02 {
+        if buf[0] != 0x05 {
             return Err(CryptoError::InvalidPublicKeyFormat(buf[0]));
         }
-        let mut public_key = [0u8; ed25519_dalek::PUBLIC_KEY_LENGTH];
-        public_key.copy_from_slice(&buf[1..]);
+        let (ed25519_vk, slh_dsa_vk) = buf[1..].split_at(ed25519::VERIFYING_KEY_LENGTH);
         Ok(Self(
-            VerifyingKey::from_bytes(&public_key).map_err(CryptoError::InvalidPublicKeyEd25519)?,
+            ed25519::VerifyingKey::deserialize(ed25519_vk)?,
+            slh_dsa::VerifyingKey::deserialize(slh_dsa_vk)?,
         ))
     }
 
     #[must_use]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "The function doesn't actually panic"
+    )]
     pub fn key_id(&self) -> KeyId {
-        let pubkey = self.0.to_bytes();
+        let mut pubkey = [0u8; VERIFYING_KEY_LENGTH];
+        self.serialize_into(&mut pubkey).unwrap();
         let digest = blake3::Hasher::new().update(&pubkey).finalize();
 
         KeyId(*digest.as_bytes())
@@ -230,7 +261,7 @@ impl KeyId {
     #[must_use]
     pub fn serialize(&self) -> [u8; 33] {
         let mut buf = [0u8; 33];
-        buf[0] = 0x00; // Key ID format
+        buf[0] = 0x03; // Key ID format
         buf[1..].copy_from_slice(&self.0);
         buf
     }
@@ -243,13 +274,13 @@ impl KeyId {
         if buf.len() != 33 {
             return Err(CryptoError::InvalidBufferSize(buf.len(), 33));
         }
-        if buf[0] != 0x00 {
+        if buf[0] != 0x03 {
             return Err(CryptoError::InvalidKeyIdFormat(buf[0]));
         }
         let mut key_id = [0u8; 32];
         let mut i = 0;
         while i < key_id.len() {
-            key_id[i                    ] = buf[i + 1];
+            key_id[i] = buf[i + 1];
             i += 1;
         }
         Ok(Self(key_id))

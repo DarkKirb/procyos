@@ -5,7 +5,7 @@ use core::ops::Deref;
 use thiserror::Error;
 
 use crate::{
-    crypto::{CryptoError, KeyId, PublicVerifyingKey},
+    crypto::{CryptoError, KeyId, PublicVerifyingKey, SIGNATURE_LENGTH},
     TryIndex,
 };
 
@@ -60,8 +60,11 @@ impl<'a> TWELF<'a> {
         D: Deref<Target = PublicVerifyingKey> + 'b,
         M: for<'c> TryIndex<&'c KeyId, Output = &'b D>,
     {
-        if buf.len() < 112 {
-            return Err(DeserializationError::InvalidBufferSize(112, buf.len()));
+        if buf.len() < 48 + SIGNATURE_LENGTH {
+            return Err(DeserializationError::InvalidBufferSize(
+                48 + SIGNATURE_LENGTH,
+                buf.len(),
+            ));
         }
 
         if &buf[0..4] != b"TWLF" {
@@ -74,8 +77,8 @@ impl<'a> TWELF<'a> {
         }
 
         let version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        if version != 0 {
-            return Err(DeserializationError::InvalidVersion(0, version));
+        if version != 1 {
+            return Err(DeserializationError::InvalidVersion(1, version));
         }
 
         let this = Self(buf);
@@ -87,14 +90,14 @@ impl<'a> TWELF<'a> {
             None => return Err(DeserializationError::UntrustedKey(key_id)),
         };
 
-        if buf.len() < 112 + this.num_files() * 56 {
+        if buf.len() < 48 + SIGNATURE_LENGTH + this.num_files() * 56 {
             return Err(DeserializationError::InvalidBufferSize(
-                112 + this.num_files() * 56,
+                48 + SIGNATURE_LENGTH + this.num_files() * 56,
                 buf.len(),
             ));
         }
 
-        key.verify(&buf[..(112 + this.num_files() * 56)])?;
+        key.verify(&buf[..(48 + SIGNATURE_LENGTH + this.num_files() * 56)])?;
 
         Ok(this)
     }

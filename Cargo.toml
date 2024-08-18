@@ -6,8 +6,8 @@ debug = 2
 split-debuginfo = "packed"
 #strip = true
 
-#[profile.dev.package."*"]
-#opt-level = 3
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.dev]
 split-debuginfo = "packed"
@@ -26,3 +26,6 @@ members = [
     "xtask",
 ]
 resolver = "2"
+
+[patch.crates-io]
+pasetors = { git = "https://github.com/DarkKirb/pasetors" }

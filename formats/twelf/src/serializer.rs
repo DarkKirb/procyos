@@ -35,14 +35,14 @@ impl<'a> TWELF<'a> {
     pub fn serialize(&mut self) -> Result<Vec<u8>, CryptoError> {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"TWLF"); // Magic number
-        buf.extend_from_slice(&0u32.to_le_bytes()); // Version
+        buf.extend_from_slice(&1u32.to_le_bytes()); // Version
         let files: u32 = self
             .files
             .len()
             .try_into()
             .expect("Number of files must fit in u32");
         buf.extend_from_slice(&files.to_le_bytes()); // Number of files
-        buf.extend_from_slice(&self.signing_key.public_key().key_id().serialize()); // Key ID
+        buf.extend_from_slice(&self.signing_key.verifying_key().key_id().serialize()); // Key ID
         buf.extend_from_slice(b"\0\0\0"); // Padding
         buf.extend_from_slice(&vec![0u8; 56 * self.files.len()]); // Reserving file metadata
         let signed_length = buf.len();
