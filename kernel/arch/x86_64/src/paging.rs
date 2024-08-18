@@ -23,11 +23,31 @@ pub enum PageFault {
 ///
 /// This function is unsafe as the implementor needs to return a pointer to a Page Table structure, well aligned to 4096 bytes.
 pub unsafe trait PageOracle {
-    /// Returns a virtual address that corresponds to the given physical address for a paging-related function
+    /// Resolves the location of a PML4 structure from the physical and virtual addresses
     ///
     /// # Errors
-    /// This function may return an error if the given physical address is not mapped to a valid virtual address.
-    fn physical_to_virtual(&self, physical: usize) -> Result<NonNull<u8>, PageFault>;
+    /// This function returns an error if the PML4 structure is not present
+    fn resolve_pml4(&self, paddr: usize, vaddr: usize) -> Result<NonNull<PML4>, PageFault>;
+    /// Resolves the location of a PDPT structure from the physical and virtual addresses
+    ///
+    /// # Errors
+    /// This function returns an error if the PDPT structure is not present
+    fn resolve_pdpt(&self, paddr: usize, vaddr: usize) -> Result<NonNull<PDPT>, PageFault>;
+    /// Resolves the location of a PD structure from the physical and virtual addresses
+    ///
+    /// # Errors
+    /// This function returns an error if the PD structure is not present
+    fn resolve_pd(&self, paddr: usize, vaddr: usize) -> Result<NonNull<PD>, PageFault>;
+    /// Resolves the location of a PT structure from the physical and virtual addresses
+    ///
+    /// # Errors
+    /// This function returns an error if the PT structure is not present
+    fn resolve_pt(&self, paddr: usize, vaddr: usize) -> Result<NonNull<PT>, PageFault>;
+    /// Resolves the location of a page from the physical and virtual addresses
+    ///
+    /// # Errors
+    /// This function returns an error if the page is not present
+    fn resolve_page(&self, paddr: usize, vaddr: usize) -> Result<NonNull<u8>, PageFault>;
 }
 
 /// Reserves a page for use for paging-related functions
@@ -84,12 +104,15 @@ impl PML5Entry {
     ///
     /// # Errors
     /// This function returns an error if the entry is not present, or is inaccessible, or
-    #[allow(clippy::cast_ptr_alignment, reason = "We check alignment manually")]
-    pub fn get_pml4(&self, page_oracle: &impl PageOracle) -> Result<&'static mut PML4, PageFault> {
+    pub fn get_pml4(
+        &self,
+        virt_addr: usize,
+        page_oracle: &impl PageOracle,
+    ) -> Result<&'static mut PML4, PageFault> {
         if self.present() {
-            let ptr = page_oracle.physical_to_virtual(self.phys_addr())?;
-            if ptr.is_aligned_to(align_of::<PML4>()) {
-                Ok(unsafe { ptr.cast::<PML4>().as_mut() })
+            let mut ptr = page_oracle.resolve_pml4(self.phys_addr(), virt_addr)?;
+            if ptr.is_aligned() {
+                Ok(unsafe { ptr.as_mut() })
             } else {
                 Err(PageFault::BrokenPageOracle(
                     self.phys_addr(),
@@ -147,7 +170,7 @@ impl PML5 {
     ) -> Result<(), PageFault> {
         let index = (virtual_addr >> 48) % 512;
         let pml4 = if let Some(idx) = self.get(index) {
-            idx.get_pml4(page_oracle)?
+            idx.get_pml4(virtual_addr, page_oracle)?
         } else {
             let page = page_allocator.allocate()?;
             let entry = PML5Entry::new()
@@ -155,7 +178,7 @@ impl PML5 {
                 .with_write_enable(true)
                 .with_page_addr(page >> 12);
             self.set(index, entry);
-            entry.get_pml4(page_oracle)?
+            entry.get_pml4(virtual_addr, page_oracle)?
         };
         pml4.map(
             virtual_addr,
@@ -179,7 +202,7 @@ impl PML5 {
     ) -> Result<NonNull<u8>, PageFault> {
         let idx = (virtual_addr >> 48) % 512;
         let pml4 = match self.get(idx) {
-            Some(idx) => idx.get_pml4(page_oracle)?,
+            Some(idx) => idx.get_pml4(virtual_addr, page_oracle)?,
             None => return Err(PageFault::NotPresent(virtual_addr)),
         };
         pml4.resolve(virtual_addr, page_oracle)
@@ -208,7 +231,7 @@ impl PML5 {
     ) -> Result<(), PageFault> {
         let idx = (virtual_addr >> 48) % 512;
         let (pml4, physical) = match self.get(idx) {
-            Some(idx) => (idx.get_pml4(page_oracle)?, idx.phys_addr()),
+            Some(idx) => (idx.get_pml4(virtual_addr, page_oracle)?, idx.phys_addr()),
             None => return Ok(()),
         };
         let empty = pml4.unmap(virtual_addr, page_oracle, page_allocator)?;
@@ -258,11 +281,15 @@ impl PML4Entry {
     /// # Errors
     /// This function returns an error if the entry is not present, or is inaccessible, or
     #[allow(clippy::cast_ptr_alignment, reason = "We check alignment manually")]
-    pub fn get_pdpt(&self, page_oracle: &impl PageOracle) -> Result<&'static mut PDPT, PageFault> {
+    pub fn get_pdpt(
+        &self,
+        virt_addr: usize,
+        page_oracle: &impl PageOracle,
+    ) -> Result<&'static mut PDPT, PageFault> {
         if self.present() {
-            let ptr = page_oracle.physical_to_virtual(self.phys_addr())?;
-            if ptr.is_aligned_to(align_of::<PDPT>()) {
-                Ok(unsafe { ptr.cast::<PDPT>().as_mut() })
+            let mut ptr = page_oracle.resolve_pdpt(self.phys_addr(), virt_addr)?;
+            if ptr.is_aligned() {
+                Ok(unsafe { ptr.as_mut() })
             } else {
                 Err(PageFault::BrokenPageOracle(
                     self.phys_addr(),
@@ -318,7 +345,7 @@ impl PML4 {
     ) -> Result<(), PageFault> {
         let index = (virtual_addr >> 39) % 512;
         let pdpt = if let Some(idx) = self.get(index) {
-            idx.get_pdpt(page_oracle)?
+            idx.get_pdpt(virtual_addr, page_oracle)?
         } else {
             let page = page_allocator.allocate()?;
             let entry = PML4Entry::new()
@@ -326,7 +353,7 @@ impl PML4 {
                 .with_write_enable(true)
                 .with_page_addr(page >> 12);
             self.set(index, entry);
-            entry.get_pdpt(page_oracle)?
+            entry.get_pdpt(virtual_addr, page_oracle)?
         };
         pdpt.map(
             virtual_addr,
@@ -349,7 +376,7 @@ impl PML4 {
     ) -> Result<NonNull<u8>, PageFault> {
         let idx = (virtual_addr >> 39) % 512;
         let pdpt = match self.get(idx) {
-            Some(idx) => idx.get_pdpt(page_oracle)?,
+            Some(idx) => idx.get_pdpt(virtual_addr, page_oracle)?,
             None => return Err(PageFault::NotPresent(virtual_addr)),
         };
         pdpt.resolve(virtual_addr, page_oracle)
@@ -377,7 +404,7 @@ impl PML4 {
     ) -> Result<bool, PageFault> {
         let idx = (virtual_addr >> 39) % 512;
         let (pdpt, physical) = match self.get(idx) {
-            Some(idx) => (idx.get_pdpt(page_oracle)?, idx.phys_addr()),
+            Some(idx) => (idx.get_pdpt(virtual_addr, page_oracle)?, idx.phys_addr()),
             None => return Ok(false),
         };
         let empty = pdpt.unmap(virtual_addr, page_oracle, page_allocator)?;
@@ -431,12 +458,15 @@ impl PDPTEntry {
     ///
     /// # Errors
     /// This function returns an error if the entry is not present, or is inaccessible, or
-    #[allow(clippy::cast_ptr_alignment, reason = "We check alignment manually")]
-    pub fn get_pd(&self, page_oracle: &impl PageOracle) -> Result<&'static mut PD, PageFault> {
+    pub fn get_pd(
+        &self,
+        virt_addr: usize,
+        page_oracle: &impl PageOracle,
+    ) -> Result<&'static mut PD, PageFault> {
         if self.present() {
-            let ptr = page_oracle.physical_to_virtual(self.phys_addr())?;
-            if ptr.is_aligned_to(align_of::<PD>()) {
-                Ok(unsafe { ptr.cast::<PD>().as_mut() })
+            let mut ptr = page_oracle.resolve_pd(self.phys_addr(), virt_addr)?;
+            if ptr.is_aligned() {
+                Ok(unsafe { ptr.as_mut() })
             } else {
                 Err(PageFault::BrokenPageOracle(
                     self.phys_addr(),
@@ -492,7 +522,7 @@ impl PDPT {
     ) -> Result<(), PageFault> {
         let index = (virtual_addr >> 30) % 512;
         let pd = if let Some(idx) = self.get(index) {
-            idx.get_pd(page_oracle)?
+            idx.get_pd(virtual_addr, page_oracle)?
         } else {
             let page = page_allocator.allocate()?;
             let entry = PDPTEntry::new()
@@ -500,7 +530,7 @@ impl PDPT {
                 .with_write_enable(true)
                 .with_page_addr(page >> 12);
             self.set(index, entry);
-            entry.get_pd(page_oracle)?
+            entry.get_pd(virtual_addr, page_oracle)?
         };
         pd.map(
             virtual_addr,
@@ -523,7 +553,7 @@ impl PDPT {
     ) -> Result<NonNull<u8>, PageFault> {
         let idx = (virtual_addr >> 30) % 512;
         let pd = match self.get(idx) {
-            Some(idx) => idx.get_pd(page_oracle)?,
+            Some(idx) => idx.get_pd(virtual_addr, page_oracle)?,
             None => return Err(PageFault::NotPresent(virtual_addr)),
         };
         pd.resolve(virtual_addr, page_oracle)
@@ -541,7 +571,7 @@ impl PDPT {
     ) -> Result<bool, PageFault> {
         let idx = (virtual_addr >> 30) % 512;
         let (pd, physical) = match self.get(idx) {
-            Some(idx) => (idx.get_pd(page_oracle)?, idx.phys_addr()),
+            Some(idx) => (idx.get_pd(virtual_addr, page_oracle)?, idx.phys_addr()),
             None => return Ok(false),
         };
         let empty = pd.unmap(virtual_addr, page_oracle, page_allocator)?;
@@ -595,12 +625,15 @@ impl PDEntry {
     ///
     /// # Errors
     /// This function returns an error if the entry is not present, or is inaccessible, or
-    #[allow(clippy::cast_ptr_alignment, reason = "We check alignment manually")]
-    pub fn get_pt(&self, page_oracle: &impl PageOracle) -> Result<&'static mut PT, PageFault> {
+    pub fn get_pt(
+        &self,
+        virt_addr: usize,
+        page_oracle: &impl PageOracle,
+    ) -> Result<&'static mut PT, PageFault> {
         if self.present() {
-            let ptr = page_oracle.physical_to_virtual(self.phys_addr())?;
-            if ptr.is_aligned_to(align_of::<PT>()) {
-                Ok(unsafe { ptr.cast::<PT>().as_mut() })
+            let mut ptr = page_oracle.resolve_pt(self.phys_addr(), virt_addr)?;
+            if ptr.is_aligned() {
+                Ok(unsafe { ptr.as_mut() })
             } else {
                 Err(PageFault::BrokenPageOracle(
                     self.phys_addr(),
@@ -656,7 +689,7 @@ impl PD {
     ) -> Result<(), PageFault> {
         let index = (virtual_addr >> 21) % 512;
         let pt = if let Some(idx) = self.get(index) {
-            idx.get_pt(page_oracle)?
+            idx.get_pt(virtual_addr, page_oracle)?
         } else {
             let page = page_allocator.allocate()?;
             let entry = PDEntry::new()
@@ -664,7 +697,7 @@ impl PD {
                 .with_write_enable(true)
                 .with_page_addr(page >> 12);
             self.set(index, entry);
-            entry.get_pt(page_oracle)?
+            entry.get_pt(virtual_addr, page_oracle)?
         };
         pt.map(virtual_addr, physical_addr, write, execute);
         Ok(())
@@ -681,7 +714,7 @@ impl PD {
     ) -> Result<NonNull<u8>, PageFault> {
         let idx = (virtual_addr >> 21) % 512;
         let pt = match self.get(idx) {
-            Some(idx) => idx.get_pt(page_oracle)?,
+            Some(idx) => idx.get_pt(virtual_addr, page_oracle)?,
             None => return Err(PageFault::NotPresent(virtual_addr)),
         };
         pt.resolve(virtual_addr, page_oracle)
@@ -699,7 +732,7 @@ impl PD {
     ) -> Result<bool, PageFault> {
         let idx = (virtual_addr >> 21) % 512;
         let (pt, physical) = match self.get(idx) {
-            Some(idx) => (idx.get_pt(page_oracle)?, idx.phys_addr()),
+            Some(idx) => (idx.get_pt(virtual_addr, page_oracle)?, idx.phys_addr()),
             None => return Ok(false),
         };
         let empty = pt.unmap(virtual_addr);
@@ -807,7 +840,7 @@ impl PT {
         let idx = (virtual_addr >> 12) % 512;
         self.get(idx)
             .map_or(Err(PageFault::NotPresent(virtual_addr)), |pt| {
-                page_oracle.physical_to_virtual(pt.phys_addr())
+                page_oracle.resolve_page(pt.phys_addr(), virtual_addr)
             })
     }
 

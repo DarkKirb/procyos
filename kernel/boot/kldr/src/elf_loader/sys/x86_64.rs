@@ -30,8 +30,36 @@ pub enum PageBase {
 struct IdentityOracle;
 
 unsafe impl PageOracle for IdentityOracle {
-    fn physical_to_virtual(&self, physical: usize) -> Result<NonNull<u8>, PageFault> {
-        NonNull::new(physical as *mut u8).ok_or(PageFault::InvalidMapping(0))
+    fn resolve_pml4(&self, paddr: usize, _: usize) -> Result<NonNull<PML4>, PageFault> {
+        NonNull::new(paddr as *mut _).ok_or(PageFault::InvalidMapping(0))
+    }
+
+    fn resolve_pdpt(
+        &self,
+        paddr: usize,
+        _: usize,
+    ) -> Result<NonNull<kernel_arch_x86_64::paging::PDPT>, PageFault> {
+        NonNull::new(paddr as *mut _).ok_or(PageFault::InvalidMapping(0))
+    }
+
+    fn resolve_pd(
+        &self,
+        paddr: usize,
+        _: usize,
+    ) -> Result<NonNull<kernel_arch_x86_64::paging::PD>, PageFault> {
+        NonNull::new(paddr as *mut _).ok_or(PageFault::InvalidMapping(0))
+    }
+
+    fn resolve_pt(
+        &self,
+        paddr: usize,
+        _: usize,
+    ) -> Result<NonNull<kernel_arch_x86_64::paging::PT>, PageFault> {
+        NonNull::new(paddr as *mut _).ok_or(PageFault::InvalidMapping(0))
+    }
+
+    fn resolve_page(&self, paddr: usize, _: usize) -> Result<NonNull<u8>, PageFault> {
+        NonNull::new(paddr as *mut _).ok_or(PageFault::InvalidMapping(0))
     }
 }
 
