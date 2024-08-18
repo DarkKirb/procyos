@@ -1,5 +1,5 @@
 [alias]
-xtask = "run --package xtask --"
+xtask = "run --release --package xtask --"
 
 [build]
 rustflags = ["-Csymbol-mangling-version=v0"]

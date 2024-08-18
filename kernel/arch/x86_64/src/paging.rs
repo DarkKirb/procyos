@@ -42,6 +42,9 @@ pub unsafe trait PageAllocator {
     ///
     /// This function returns an error if the allocation fails
     fn allocate(&mut self) -> Result<usize, AllocError>;
+
+    /// Deallocates a specific page
+    fn deallocate(&mut self, physical: usize);
 }
 
 /// A single Page Map Level 5 Entry (PML5E)
@@ -192,6 +195,29 @@ impl PML5 {
             .with_page_addr(phys_addr >> 12);
         0xFFFE_0000_0000_0000
     }
+
+    /// Removes the mapping for the given virtual address, if it exists. It deallocates page table tables as necessary.
+    ///
+    /// # Errors
+    /// This function returns an error if resolving fails
+    pub fn unmap(
+        &mut self,
+        virtual_addr: usize,
+        page_oracle: &impl PageOracle,
+        page_allocator: &mut impl PageAllocator,
+    ) -> Result<(), PageFault> {
+        let idx = (virtual_addr >> 48) % 512;
+        let (pml4, physical) = match self.get(idx) {
+            Some(idx) => (idx.get_pml4(page_oracle)?, idx.phys_addr()),
+            None => return Ok(()),
+        };
+        let empty = pml4.unmap(virtual_addr, page_oracle, page_allocator)?;
+        if empty {
+            self.0[idx].set_present(false);
+            page_allocator.deallocate(physical);
+        }
+        Ok(())
+    }
 }
 
 /// A single Page Map Level 4 Entry (PML4E)
@@ -339,6 +365,33 @@ impl PML4 {
             .with_page_addr(phys_addr >> 12);
         0xffff_ff00_0000_0000
     }
+    /// Removes the mapping for the given virtual address, if it exists. It deallocates page table tables as necessary.
+    ///
+    /// # Errors
+    /// This function returns an error if resolving fails
+    pub fn unmap(
+        &mut self,
+        virtual_addr: usize,
+        page_oracle: &impl PageOracle,
+        page_allocator: &mut impl PageAllocator,
+    ) -> Result<bool, PageFault> {
+        let idx = (virtual_addr >> 39) % 512;
+        let (pdpt, physical) = match self.get(idx) {
+            Some(idx) => (idx.get_pdpt(page_oracle)?, idx.phys_addr()),
+            None => return Ok(false),
+        };
+        let empty = pdpt.unmap(virtual_addr, page_oracle, page_allocator)?;
+        if empty {
+            self.0[idx].set_present(false);
+            page_allocator.deallocate(physical);
+        }
+        for i in 0..512 {
+            if self.0[i].present() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// A single Page Directory Pointer Table Entry (PDPTE)
@@ -475,6 +528,34 @@ impl PDPT {
         };
         pd.resolve(virtual_addr, page_oracle)
     }
+
+    /// Removes the mapping for the given virtual address, if it exists. It deallocates page table tables as necessary.
+    ///
+    /// # Errors
+    /// This function returns an error if resolving fails
+    fn unmap(
+        &mut self,
+        virtual_addr: usize,
+        page_oracle: &impl PageOracle,
+        page_allocator: &mut impl PageAllocator,
+    ) -> Result<bool, PageFault> {
+        let idx = (virtual_addr >> 30) % 512;
+        let (pd, physical) = match self.get(idx) {
+            Some(idx) => (idx.get_pd(page_oracle)?, idx.phys_addr()),
+            None => return Ok(false),
+        };
+        let empty = pd.unmap(virtual_addr, page_oracle, page_allocator)?;
+        if empty {
+            self.0[idx].set_present(false);
+            page_allocator.deallocate(physical);
+        }
+        for i in 0..512 {
+            if self.0[i].present() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// A single Page Directory Entry (PDE)
@@ -605,6 +686,34 @@ impl PD {
         };
         pt.resolve(virtual_addr, page_oracle)
     }
+
+    /// Removes the mapping for the given virtual address, if it exists. It deallocates page table tables as necessary.
+    ///
+    /// # Errors
+    /// This function returns an error if resolving fails
+    fn unmap(
+        &mut self,
+        virtual_addr: usize,
+        page_oracle: &impl PageOracle,
+        page_allocator: &mut impl PageAllocator,
+    ) -> Result<bool, PageFault> {
+        let idx = (virtual_addr >> 21) % 512;
+        let (pt, physical) = match self.get(idx) {
+            Some(idx) => (idx.get_pt(page_oracle)?, idx.phys_addr()),
+            None => return Ok(false),
+        };
+        let empty = pt.unmap(virtual_addr);
+        if empty {
+            self.0[idx].set_present(false);
+            page_allocator.deallocate(physical);
+        }
+        for i in 0..512 {
+            if self.0[i].present() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// A single Page Table Entry (PTE)
@@ -700,5 +809,20 @@ impl PT {
             .map_or(Err(PageFault::NotPresent(virtual_addr)), |pt| {
                 page_oracle.physical_to_virtual(pt.phys_addr())
             })
+    }
+
+    /// Removes the mapping for the given virtual address, if it exists. It deallocates page table tables as necessary.
+    ///
+    /// # Errors
+    /// This function returns an error if resolving fails
+    fn unmap(&mut self, virtual_addr: usize) -> bool {
+        let idx = (virtual_addr >> 12) % 512;
+        self.0[idx].set_present(false);
+        for i in 0..512 {
+            if self.0[i].present() {
+                return false;
+            }
+        }
+        true
     }
 }

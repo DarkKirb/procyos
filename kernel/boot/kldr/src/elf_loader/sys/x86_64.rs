@@ -44,6 +44,10 @@ unsafe impl<'a, A: Allocator> PageAllocator for AllocatorPageAlloc<'a, A> {
         let page = self.0.allocate(layout)?;
         Ok(page.addr().into())
     }
+
+    fn deallocate(&mut self, _: usize) {
+        // unsupported
+    }
 }
 
 impl PageBase {
