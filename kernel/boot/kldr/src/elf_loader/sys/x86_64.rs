@@ -237,8 +237,12 @@ pub fn kernelspace_start() -> usize {
     }
 }
 
-pub fn kernelspace_end() -> usize {
+pub const fn kernelspace_end() -> usize {
     usize::MAX
+}
+
+pub const fn kernelspace_code_start() -> usize {
+    0xFFFF_FFFF_8000_0000
 }
 
 pub fn relocate(

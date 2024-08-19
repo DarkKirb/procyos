@@ -1,10 +1,16 @@
 #![no_std]
 #![no_main]
+#![feature(coroutines)]
+#![feature(iter_from_coroutine)]
 
-use core::fmt::Write;
+use core::{arch::asm, fmt::Write};
 
 use buddy::{BuddyAllocator, PAddr};
 use embedded_alloc::Heap;
+use kernel_arch_x86_64::paging::{
+    pml5_support, PageOracle, RecursiveMapPageOracle, PD, PDPT, PML4, PML5, PT,
+};
+use log::debug;
 use miniser::Deserialize;
 use spin::Mutex;
 use startup_info::{ArchivedKernelStartInfo, KernelStartInfo, MemoryType};
@@ -22,6 +28,28 @@ static SERIAL: Mutex<SerialPort> = unsafe { Mutex::new(SerialPort::new(0x3F8)) }
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
+
+fn mark_addresses_used(si: &ArchivedKernelStartInfo, buddy_allocator: &mut BuddyAllocator) {
+    let cr3: usize;
+    unsafe {
+        asm!("mov {0}, cr3", out(reg) cr3);
+    }
+    let pagetable_vaddr = si.pagetable_vaddr;
+    buddy_allocator.mark_used(PAddr(cr3 as u64));
+
+    let oracle = RecursiveMapPageOracle::default();
+    if pml5_support() {
+        let pml5 = unsafe { oracle.resolve_pml5(cr3, pagetable_vaddr).as_mut() };
+        for entry in pml5.mapped_phys_pages(&oracle) {
+            buddy_allocator.mark_used(PAddr(entry as u64));
+        }
+    } else {
+        let pml4 = unsafe { oracle.resolve_pml4(cr3, pagetable_vaddr).unwrap().as_mut() };
+        for entry in pml4.mapped_phys_pages(&oracle) {
+            buddy_allocator.mark_used(PAddr(entry as u64));
+        }
+    }
+}
 
 /// # Safety
 /// a secret :)
@@ -77,6 +105,7 @@ fn start_kernel(init_info: &ArchivedKernelStartInfo) -> ! {
             ),
         );
     }
+    mark_addresses_used(init_info, &mut buddy);
     todo!();
 }
 

@@ -3,6 +3,7 @@
 use core::{alloc::AllocError, ptr::NonNull};
 
 use bitfield_struct::bitfield;
+use raw_cpuid::{CpuId, ExtendedFeatures};
 use thiserror::Error;
 
 #[derive(Debug, Copy, Clone, Error)]
@@ -48,6 +49,154 @@ pub unsafe trait PageOracle {
     /// # Errors
     /// This function returns an error if the page is not present
     fn resolve_page(&self, paddr: usize, vaddr: usize) -> Result<NonNull<u8>, PageFault>;
+}
+
+pub struct RecursiveMapPageOracle(u8, bool);
+
+impl RecursiveMapPageOracle {
+    /// Creates a new `RecursiveMapPageOracle` with the given base address and 5 level paging flag
+    ///
+    /// # Safety
+    /// This function is unsafe because it interprets the memory region as a gigantic 512GiB/256TiB structure.
+    ///
+    /// # Panic
+    /// This function panics if you pass some incorrect memory addresses.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, reason = "We check for it")]
+    pub const unsafe fn new(base_address: usize, has_pml5: bool) -> Self {
+        let idx = if has_pml5 {
+            assert!(base_address % (1 << 48) == 0);
+            base_address >> 48
+        } else {
+            assert!(base_address % (1 << 39) == 0);
+            base_address >> 39
+        };
+        assert!(idx >= 256);
+        assert!(idx != 511);
+        Self((idx - 256) as u8, has_pml5)
+    }
+    const fn index(&self) -> usize {
+        self.0 as usize + 256
+    }
+    const fn base_address(&self) -> usize {
+        if self.1 {
+            0xFE00_0000_0000_0000 + (self.index() << 48)
+        } else {
+            0xFFFF_0000_0000_0000 + (self.index() << 39)
+        }
+    }
+    pub fn resolve_pml5(&self, _: usize, vaddr: usize) -> NonNull<PML5> {
+        assert!(self.1);
+        let addr = self.base_address()
+            | self.index() << 39
+            | self.index() << 30
+            | self.index() << 21
+            | self.index() << 12;
+        NonNull::new(addr as *mut PML5).unwrap()
+    }
+}
+
+#[cfg(feature = "runtime")]
+impl Default for RecursiveMapPageOracle {
+    fn default() -> Self {
+        if pml5_support() {
+            Self(254, true)
+        } else {
+            Self(254, false)
+        }
+    }
+}
+
+unsafe impl PageOracle for RecursiveMapPageOracle {
+    fn resolve_pml4(&self, _: usize, vaddr: usize) -> Result<NonNull<PML4>, PageFault> {
+        let pm5idx = (vaddr >> 48) % 512;
+
+        let addr = if self.1 {
+            self.base_address()
+                | self.index() << 48
+                | self.index() << 39
+                | self.index() << 30
+                | self.index() << 21
+                | pm5idx << 12
+        } else {
+            self.base_address()
+                | self.index() << 39
+                | self.index() << 30
+                | self.index() << 21
+                | self.index() << 12
+        };
+        Ok(NonNull::new(addr as *mut PML4).unwrap())
+    }
+
+    fn resolve_pdpt(&self, _: usize, vaddr: usize) -> Result<NonNull<PDPT>, PageFault> {
+        let pm5idx = (vaddr >> 48) % 512;
+        let pm4idx = (vaddr >> 39) % 512;
+
+        let addr = if self.1 {
+            self.base_address()
+                | self.index() << 48
+                | self.index() << 39
+                | self.index() << 30
+                | pm5idx << 21
+                | pm4idx << 12
+        } else {
+            self.base_address()
+                | self.index() << 39
+                | self.index() << 30
+                | self.index() << 21
+                | pm4idx << 12
+        };
+        Ok(NonNull::new(addr as *mut PDPT).unwrap())
+    }
+
+    fn resolve_pd(&self, _: usize, vaddr: usize) -> Result<NonNull<PD>, PageFault> {
+        let pm5idx = (vaddr >> 48) % 512;
+        let pm4idx = (vaddr >> 39) % 512;
+        let pdptidx = (vaddr >> 30) % 512;
+
+        let addr = if self.1 {
+            self.base_address()
+                | self.index() << 48
+                | self.index() << 39
+                | pm5idx << 30
+                | pm4idx << 21
+                | pdptidx << 12
+        } else {
+            self.base_address()
+                | self.index() << 39
+                | self.index() << 30
+                | pm4idx << 21
+                | pdptidx << 12
+        };
+        Ok(NonNull::new(addr as *mut PD).unwrap())
+    }
+
+    fn resolve_pt(&self, _: usize, vaddr: usize) -> Result<NonNull<PT>, PageFault> {
+        let pm5idx = (vaddr >> 48) % 512;
+        let pm4idx = (vaddr >> 39) % 512;
+        let pdptidx = (vaddr >> 30) % 512;
+        let pdidx = (vaddr >> 21) % 512;
+
+        let addr = if self.1 {
+            self.base_address()
+                | self.index() << 48
+                | pm5idx << 39
+                | pm4idx << 30
+                | pdptidx << 21
+                | pdidx << 12
+        } else {
+            self.base_address() | self.index() << 39 | pm4idx << 30 | pdptidx << 21 | pdidx << 12
+        };
+        Ok(NonNull::new(addr as *mut PT).unwrap())
+    }
+
+    fn resolve_page(&self, _: usize, vaddr: usize) -> Result<NonNull<u8>, PageFault> {
+        if self.0 == 254 {
+            Ok(NonNull::new(vaddr as *mut u8).unwrap())
+        } else {
+            Err(PageFault::NotPresent(vaddr))
+        }
+    }
 }
 
 /// Reserves a page for use for paging-related functions
@@ -241,6 +390,18 @@ impl PML5 {
         }
         Ok(())
     }
+
+    pub fn mapped_phys_pages<'a>(
+        &'a self,
+        oracle: &'a impl PageOracle,
+    ) -> impl Iterator<Item = usize> + 'a {
+        PML5MapIterator {
+            pml5: self,
+            oracle,
+            addr: 0,
+            state: PML5IteratorState::PML5Yield,
+        }
+    }
 }
 
 /// A single Page Map Level 4 Entry (PML4E)
@@ -418,6 +579,18 @@ impl PML4 {
             }
         }
         Ok(true)
+    }
+
+    pub fn mapped_phys_pages<'a>(
+        &'a self,
+        oracle: &'a impl PageOracle,
+    ) -> impl Iterator<Item = usize> + 'a {
+        PML4MapIterator {
+            pml4: self,
+            oracle,
+            addr: 0,
+            state: PML4IteratorState::PML4Yield,
+        }
     }
 }
 
@@ -857,5 +1030,246 @@ impl PT {
             }
         }
         true
+    }
+}
+
+pub fn pml5_support() -> bool {
+    let cpuid = CpuId::new();
+    cpuid
+        .get_extended_feature_info()
+        .as_ref()
+        .is_some_and(ExtendedFeatures::has_la57)
+}
+
+enum PML5IteratorState {
+    PML5Yield,
+    PML4Yield,
+    PDPTYield,
+    PDYield,
+    PTYield,
+    Recalculate,
+}
+struct PML5MapIterator<'a, O: PageOracle> {
+    pml5: &'a PML5,
+    oracle: &'a O,
+    addr: usize,
+    state: PML5IteratorState,
+}
+
+impl<O: PageOracle> Iterator for PML5MapIterator<'_, O> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let pml5idx = (self.addr >> 48) % 512;
+            let pml4idx = (self.addr >> 39) % 512;
+            let pdptidx = (self.addr >> 30) % 512;
+            let pdidx = (self.addr >> 21) % 512;
+            let ptidx = (self.addr >> 12) % 512;
+            match self.state {
+                PML5IteratorState::PML5Yield => {
+                    let pml5 = self.pml5;
+                    if pml5.0[pml5idx].present() {
+                        self.state = PML5IteratorState::PML4Yield;
+                        return Some(pml5.0[pml5idx].phys_addr());
+                    }
+                    self.addr += 0x1_0000_0000_0000;
+                    if pml5idx == 255 {
+                        self.addr |= 0xfe00_0000_0000_0000;
+                    } else if pml4idx == 511 {
+                        self.state = PML5IteratorState::Recalculate;
+                    }
+                }
+                PML5IteratorState::PML4Yield => {
+                    let pml4 = self.pml5.0[pml5idx]
+                        .get_pml4(self.addr, self.oracle)
+                        .unwrap();
+                    if pml4.0[pml4idx].present() {
+                        self.state = PML5IteratorState::PDPTYield;
+                        return Some(pml4.0[pml4idx].phys_addr());
+                    }
+                    self.addr += 0x80_0000_0000;
+                    if pml4idx == 511 {
+                        self.state = PML5IteratorState::Recalculate;
+                    }
+                }
+                PML5IteratorState::PDPTYield => {
+                    let pdpt = self.pml5.0[pml5idx]
+                        .get_pml4(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap();
+                    if pdpt.0[pdptidx].present() {
+                        self.state = PML5IteratorState::PDYield;
+                        return Some(pdpt.0[pdptidx].phys_addr());
+                    }
+                    self.addr += 0x4000_0000;
+                    if pdptidx == 511 {
+                        self.state = PML5IteratorState::Recalculate;
+                    }
+                }
+                PML5IteratorState::PDYield => {
+                    let pd = self.pml5.0[pml5idx]
+                        .get_pml4(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdptidx]
+                        .get_pd(self.addr, self.oracle)
+                        .unwrap();
+                    if pd.0[pdidx].present() {
+                        self.state = PML5IteratorState::PTYield;
+                        return Some(pd.0[pdidx].phys_addr());
+                    }
+                    self.addr += 0x20_0000;
+                    if pdidx == 511 {
+                        self.state = PML5IteratorState::Recalculate;
+                    }
+                }
+                PML5IteratorState::PTYield => {
+                    let pt = self.pml5.0[pml5idx]
+                        .get_pml4(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdptidx]
+                        .get_pd(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdidx]
+                        .get_pt(self.addr, self.oracle)
+                        .unwrap();
+                    self.addr += 0x1000;
+                    if ptidx == 511 {
+                        self.state = PML5IteratorState::Recalculate;
+                    }
+                    if pt.0[ptidx].present() {
+                        return Some(pt.0[ptidx].phys_addr());
+                    }
+                }
+                PML5IteratorState::Recalculate => {
+                    if self.addr == 0 {
+                        return None; // We are done here
+                    }
+                    if ptidx == 0 {
+                        self.state = PML5IteratorState::PDYield;
+                    }
+                    if pdidx == 0 {
+                        self.state = PML5IteratorState::PDPTYield;
+                    }
+                    if pdptidx == 0 {
+                        self.state = PML5IteratorState::PML4Yield;
+                    }
+                    if pml4idx == 0 {
+                        self.state = PML5IteratorState::PML5Yield;
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum PML4IteratorState {
+    PML4Yield,
+    PDPTYield,
+    PDYield,
+    PTYield,
+    Recalculate,
+}
+struct PML4MapIterator<'a, O: PageOracle> {
+    pml4: &'a PML4,
+    oracle: &'a O,
+    addr: usize,
+    state: PML4IteratorState,
+}
+
+impl<O: PageOracle> Iterator for PML4MapIterator<'_, O> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let pml4idx = (self.addr >> 39) % 512;
+            let pdptidx = (self.addr >> 30) % 512;
+            let pdidx = (self.addr >> 21) % 512;
+            let ptidx = (self.addr >> 12) % 512;
+            match self.state {
+                PML4IteratorState::PML4Yield => {
+                    let pml4 = self.pml4;
+                    if pml4.0[pml4idx].present() {
+                        self.state = PML4IteratorState::PDPTYield;
+                        return Some(pml4.0[pml4idx].phys_addr());
+                    }
+                    self.addr = self.addr.wrapping_add(0x80_0000_0000);
+                    if pml4idx == 255 {
+                        self.addr |= 0xffff_0000_0000_0000;
+                    } else if pml4idx == 511 {
+                        self.state = PML4IteratorState::Recalculate;
+                    }
+                }
+                PML4IteratorState::PDPTYield => {
+                    let pdpt = self.pml4.0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap();
+                    if pdpt.0[pdptidx].present() {
+                        self.state = PML4IteratorState::PDYield;
+                        return Some(pdpt.0[pdptidx].phys_addr());
+                    }
+                    self.addr = self.addr.wrapping_add(0x4000_0000);
+                    if pdptidx == 511 {
+                        self.state = PML4IteratorState::Recalculate;
+                    }
+                }
+                PML4IteratorState::PDYield => {
+                    let pd = self.pml4.0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdptidx]
+                        .get_pd(self.addr, self.oracle)
+                        .unwrap();
+                    if pd.0[pdidx].present() {
+                        self.state = PML4IteratorState::PTYield;
+                        return Some(pd.0[pdidx].phys_addr());
+                    }
+                    self.addr = self.addr.wrapping_add(0x20_0000);
+                    if pdidx == 511 {
+                        self.state = PML4IteratorState::Recalculate;
+                    }
+                }
+                PML4IteratorState::PTYield => {
+                    let pt = self.pml4.0[pml4idx]
+                        .get_pdpt(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdptidx]
+                        .get_pd(self.addr, self.oracle)
+                        .unwrap()
+                        .0[pdidx]
+                        .get_pt(self.addr, self.oracle)
+                        .unwrap();
+                    self.addr = self.addr.wrapping_add(0x1000);
+                    if ptidx == 511 {
+                        self.state = PML4IteratorState::Recalculate;
+                    }
+                    if pt.0[ptidx].present() {
+                        return Some(pt.0[ptidx].phys_addr());
+                    }
+                }
+                PML4IteratorState::Recalculate => {
+                    if self.addr == 0 {
+                        return None; // We are done here
+                    }
+                    if ptidx == 0 {
+                        self.state = PML4IteratorState::PDYield;
+                    }
+                    if pdidx == 0 {
+                        self.state = PML4IteratorState::PDPTYield;
+                    }
+                    if pdptidx == 0 {
+                        self.state = PML4IteratorState::PML4Yield;
+                    }
+                }
+            }
+        }
     }
 }
