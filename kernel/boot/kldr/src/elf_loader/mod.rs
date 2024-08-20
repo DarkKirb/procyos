@@ -63,8 +63,9 @@ pub fn load(
     elf_bin: &[u8],
     rand: &mut impl Rng,
     system_table: SystemTable<Boot>,
+    free_usable_memory: usize,
 ) -> Result<!, ElfLoadError> {
-    let bump = BumpAllocator::new(8 * 1024 * 1024); // Reserve 8MiB for the bump allocator
+    let bump = BumpAllocator::new((free_usable_memory / 4).min(16 * 1024 * 1024)); // Reserve 8MiB for the bump allocator
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bin)?;
     // Sanity check that the ELF file is supported.
     sys::verify_header(&elf.ehdr)?;
@@ -168,8 +169,9 @@ pub fn load(
     )?;
 
     info!("Allocating the CMA area");
+    let cma_size = (free_usable_memory / 8).min(8 * 1024 * 1024);
     let cma_ptr = bump
-        .allocate_zeroed(Layout::from_size_align(1024 * 1024, 4096).unwrap())
+        .allocate_zeroed(Layout::from_size_align(cma_size, 4096).unwrap())
         .unwrap();
 
     let cma_paddr = cma_ptr.as_ptr().cast::<u8>() as usize;
@@ -179,13 +181,8 @@ pub fn load(
         cma_addr, cma_paddr
     );
 
-    for i in 0..(1024 * 1024 / PAGE_SIZE) {
-        page_table.map(
-            cma_addr + i * PAGE_SIZE,
-            cma_paddr + i * PAGE_SIZE,
-            true,
-            false,
-        )?;
+    for i in (0..cma_size).step_by(PAGE_SIZE) {
+        page_table.map(cma_addr + i, cma_paddr + i, true, false)?;
     }
 
     info!("Gathering some system information");
@@ -229,6 +226,7 @@ pub fn load(
         graphics_info,
         recursive_map_addr,
         cma_addr,
+        cma_size,
         seed,
     );
 

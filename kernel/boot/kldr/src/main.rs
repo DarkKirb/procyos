@@ -17,7 +17,10 @@ use twelf::{
     picker::find_best_executable,
 };
 use uefi::{
-    fs::FileSystem, prelude::*, proto::media::fs::SimpleFileSystem, table::boot::ScopedProtocol,
+    fs::FileSystem,
+    prelude::*,
+    proto::media::fs::SimpleFileSystem,
+    table::boot::{MemoryType, ScopedProtocol},
 };
 
 pub mod bump_alloc;
@@ -34,6 +37,18 @@ include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
 #[entry]
 fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     uefi::helpers::init(&mut system_table).unwrap();
+    let free_system_memory = {
+        let memory_map = system_table
+            .boot_services()
+            .memory_map(MemoryType::LOADER_DATA)
+            .unwrap();
+        memory_map
+            .entries()
+            .filter(|entry| entry.ty == MemoryType::CONVENTIONAL)
+            .map(|v| v.page_count)
+            .sum::<u64>()
+            * 4096
+    };
     let kernel_data;
     let (best_executable, mut rng) = {
         info!("Hello world!");
@@ -58,6 +73,7 @@ fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         best_executable.unwrap().read().unwrap(),
         &mut rng,
         system_table,
+        free_system_memory as usize,
     )
     .unwrap();
 }

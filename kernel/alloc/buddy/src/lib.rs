@@ -1,6 +1,9 @@
 //! Buddy Allocator for physical memory allocation
 
 #![no_std]
+#![feature(allocator_api)]
+
+use core::alloc::AllocError;
 
 use bitvec::{bitvec, vec::BitVec};
 use log::debug;
@@ -168,5 +171,63 @@ impl BuddyAllocator {
     #[must_use]
     pub const fn page_size(&self) -> usize {
         65536
+    }
+
+    fn block_order_at(&self, addr: PAddr) -> usize {
+        if addr >= self.1 {
+            return usize::MAX;
+        }
+        for i in 0..BUDDY_DEPTH {
+            let addr_idx = (addr.0 >> (22 - i)) as usize;
+            if self.0[i].len() <= addr_idx {
+                return usize::MAX;
+            }
+            if self.0[i][addr_idx] {
+                return i;
+            }
+        }
+        BUDDY_DEPTH
+    }
+
+    fn find_exact_block(&self, order: usize) -> Option<PAddr> {
+        // Find a page of the appropriate magnitude
+        let mut addr = 0;
+
+        // First sweep: Find a free block of appropriate order
+        while addr < self.1 .0 {
+            let block_order = self.block_order_at(PAddr(addr));
+            if order == block_order && self.is_free(PAddr(addr)) {
+                return Some(PAddr(addr));
+            }
+            addr += 1 << (22 - order);
+        }
+        None
+    }
+
+    /// Allocates a physical page block
+    ///
+    /// # Errors
+    /// This function returns an error if no free page is available
+    pub fn alloc_page_block(&mut self, block_magnitude: usize) -> Result<PAddr, AllocError> {
+        // Find the smallest block of memory that fits
+
+        for order in (0..BUDDY_DEPTH - 1 - block_magnitude).rev() {
+            if let Some(addr) = self.find_exact_block(order) {
+                let addr_start = addr.0;
+                let addr_end = addr_start + (1 << (22 - (BUDDY_DEPTH - 1 - block_magnitude)));
+                self.mark_range_used(PAddr(addr_start), PAddr(addr_end));
+                return Ok(addr);
+            }
+        }
+
+        Err(AllocError)
+    }
+
+    /// Allocates a physical page
+    ///
+    /// # Errors
+    /// This function returns an error if no free page is available
+    pub fn alloc_page(&mut self) -> Result<PAddr, AllocError> {
+        self.alloc_page_block(0)
     }
 }

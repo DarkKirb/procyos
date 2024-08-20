@@ -272,6 +272,7 @@ pub struct KernelStartInfo {
     pub framebuffer: Option<Framebuffer>,
     pub pagetable_vaddr: usize,
     pub cma_vaddr: usize,
+    pub cma_size: usize,
     pub random_seed: [u8; 32],
 }
 
@@ -282,6 +283,7 @@ impl KernelStartInfo {
         framebuffer: Option<Framebuffer>,
         pagetable_vaddr: usize,
         cma_vaddr: usize,
+        cma_size: usize,
         random_seed: [u8; 32],
     ) -> Self {
         Self {
@@ -290,6 +292,7 @@ impl KernelStartInfo {
             framebuffer,
             pagetable_vaddr,
             cma_vaddr,
+            cma_size,
             random_seed,
         }
     }
@@ -302,6 +305,7 @@ impl Serialize for KernelStartInfo {
             + self.framebuffer.bytes_required()
             + self.pagetable_vaddr.bytes_required()
             + self.cma_vaddr.bytes_required()
+            + self.cma_size.bytes_required()
             + self.random_seed.bytes_required()
     }
 
@@ -320,6 +324,7 @@ impl Serialize for KernelStartInfo {
         buf = self.framebuffer.serialize(buf)?;
         buf = self.pagetable_vaddr.serialize(buf)?;
         buf = self.cma_vaddr.serialize(buf)?;
+        buf = self.cma_size.serialize(buf)?;
         buf = self.random_seed.serialize(buf)?;
         Ok(buf)
     }
@@ -355,6 +360,7 @@ pub struct ArchivedKernelStartInfo<'de> {
     pub framebuffer: Option<Framebuffer>,
     pub pagetable_vaddr: usize,
     pub cma_vaddr: usize,
+    pub cma_size: usize,
     pub random_seed: [u8; 32],
 }
 
@@ -377,6 +383,8 @@ impl<'de> Deserialize<'de> for KernelStartInfo {
             usize::deserialize(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
         let cma_vaddr =
             usize::deserialize(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
+        let cma_size =
+            usize::deserialize(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
         let random_seed =
             <[u8; 32]>::deserialize(buf).map_err(ArchivedKernelStartInfoError::U8DecodeError)?;
         Ok(ArchivedKernelStartInfo {
@@ -385,6 +393,7 @@ impl<'de> Deserialize<'de> for KernelStartInfo {
             framebuffer,
             pagetable_vaddr,
             cma_vaddr,
+            cma_size,
             random_seed,
         })
     }
@@ -395,6 +404,7 @@ impl<'de> Deserialize<'de> for KernelStartInfo {
         size += <[MemoryMapEntry]>::peek_size(buf)
             .map_err(ArchivedKernelStartInfoError::MemoryMapError)?;
         size += Option::peek_size(buf).map_err(ArchivedKernelStartInfoError::OptionError)?;
+        size += usize::peek_size(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
         size += usize::peek_size(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
         size += usize::peek_size(buf).map_err(ArchivedKernelStartInfoError::U32DecodeError)?;
         size += <[u8; 32]>::peek_size(buf).map_err(ArchivedKernelStartInfoError::U8DecodeError)?;

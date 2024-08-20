@@ -1,14 +1,14 @@
 #![no_std]
 #![no_main]
-#![feature(coroutines)]
-#![feature(iter_from_coroutine)]
+#![feature(allocator_api)]
 
 use core::{arch::asm, fmt::Write};
 
 use buddy::{BuddyAllocator, PAddr};
 use embedded_alloc::Heap;
 use kernel_arch_x86_64::paging::{
-    pml5_support, PageOracle, RecursiveMapPageOracle, PD, PDPT, PML4, PML5, PT,
+    pml5_support, PageAllocator, PageFault, PageOracle, RecursiveMapPageOracle, PD, PDPT, PML4,
+    PML5, PT,
 };
 use log::debug;
 use miniser::Deserialize;
@@ -29,7 +29,56 @@ static SERIAL: Mutex<SerialPort> = unsafe { Mutex::new(SerialPort::new(0x3F8)) }
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-fn mark_addresses_used(si: &ArchivedKernelStartInfo, buddy_allocator: &mut BuddyAllocator) {
+struct BuddyPageAlloc(BuddyAllocator);
+
+unsafe impl PageAllocator for BuddyPageAlloc {
+    fn allocate(&mut self) -> Result<usize, core::alloc::AllocError> {
+        self.0.alloc_page().map(|p| p.0 as usize)
+    }
+
+    fn deallocate(&mut self, physical: usize) {
+        self.0.mark_free(PAddr(physical as u64));
+    }
+}
+
+enum PageTable {
+    Pml5(&'static mut PML5, BuddyPageAlloc, RecursiveMapPageOracle),
+    Pml4(&'static mut PML4, BuddyPageAlloc, RecursiveMapPageOracle),
+}
+
+impl PageTable {
+    pub fn map(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        write: bool,
+        execute: bool,
+    ) -> Result<(), PageFault> {
+        match self {
+            Self::Pml5(pml5, allocator, oracle) => pml5.map(
+                virtual_addr,
+                physical_addr,
+                allocator,
+                oracle,
+                write,
+                execute,
+            ),
+            Self::Pml4(pml4, allocator, oracle) => pml4.map(
+                virtual_addr,
+                physical_addr,
+                allocator,
+                oracle,
+                write,
+                execute,
+            ),
+        }
+    }
+}
+
+fn mark_addresses_used(
+    si: &ArchivedKernelStartInfo,
+    mut buddy_allocator: BuddyAllocator,
+) -> PageTable {
     let cr3: usize;
     unsafe {
         asm!("mov {0}, cr3", out(reg) cr3);
@@ -43,11 +92,13 @@ fn mark_addresses_used(si: &ArchivedKernelStartInfo, buddy_allocator: &mut Buddy
         for entry in pml5.mapped_phys_pages(&oracle) {
             buddy_allocator.mark_used(PAddr(entry as u64));
         }
+        PageTable::Pml5(pml5, BuddyPageAlloc(buddy_allocator), oracle)
     } else {
         let pml4 = unsafe { oracle.resolve_pml4(cr3, pagetable_vaddr).unwrap().as_mut() };
         for entry in pml4.mapped_phys_pages(&oracle) {
             buddy_allocator.mark_used(PAddr(entry as u64));
         }
+        PageTable::Pml4(pml4, BuddyPageAlloc(buddy_allocator), oracle)
     }
 }
 
@@ -65,7 +116,7 @@ pub unsafe extern "C" fn main(init_buf: *const u8, init_buf_size: usize) -> ! {
 
     let init_info = KernelStartInfo::deserialize(&mut bufp).unwrap();
 
-    HEAP.init(init_info.cma_vaddr, 1024 * 1024);
+    HEAP.init(init_info.cma_vaddr, init_info.cma_size);
 
     start_kernel(&init_info);
 }
@@ -105,7 +156,19 @@ fn start_kernel(init_info: &ArchivedKernelStartInfo) -> ! {
             ),
         );
     }
-    mark_addresses_used(init_info, &mut buddy);
+    let mut page_table = mark_addresses_used(init_info, buddy);
+    if let Some(fb) = init_info.framebuffer {
+        let start_addr = fb.buffer_paddr;
+        let buffer_size = fb.height as usize * fb.buffer_stride * 4;
+        for i in (0..buffer_size).step_by(4096) {
+            page_table
+                .map(start_addr + i, start_addr + i, true, false)
+                .unwrap();
+        }
+        let framebuf =
+            unsafe { core::slice::from_raw_parts_mut(start_addr as *mut u32, buffer_size / 4) };
+        framebuf.iter_mut().for_each(|v| *v = 0xFFFFFFFF);
+    }
     todo!();
 }
 
