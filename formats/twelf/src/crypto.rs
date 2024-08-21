@@ -179,9 +179,9 @@ impl PublicVerifyingKey {
     /// This function returns an error if the message has been tampered with.
     pub fn verify_detached(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         let (ed25519_sig, slh_dsa_sig) = signature.split_at(ed25519::SIGNATURE_LENGTH);
-        let res1 = self.0.verify_detached(message, ed25519_sig).is_ok();
-        let res2 = self.1.verify_detached(message, slh_dsa_sig).is_ok();
-        if black_box(black_box(res1) && black_box(res2)) {
+        let res1 = u8::from(self.0.verify_detached(message, ed25519_sig).is_ok());
+        let res2 = u8::from(self.1.verify_detached(message, slh_dsa_sig).is_ok());
+        if black_box(black_box(res1) & black_box(res2)) == 1 {
             Ok(())
         } else {
             Err(CryptoError::InvalidCombinedSignature)
