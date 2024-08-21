@@ -46,10 +46,6 @@
           buildInputs = [
             (rust-bin.nightly.latest.default.override {
               extensions = ["rust-src"];
-              targets = [
-                "i686-unknown-uefi"
-                "x86_64-unknown-uefi"
-              ];
             })
             cargo2nix.packages.${system}.cargo2nix
             llvmPackages_19.bintools

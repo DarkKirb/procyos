@@ -1,5 +1,4 @@
 #![feature(allocator_api)]
-#![feature(asm_const)]
 #![feature(const_refs_to_static)]
 #![feature(naked_functions)]
 #![feature(pointer_is_aligned_to)]
