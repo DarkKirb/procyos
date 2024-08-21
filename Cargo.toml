@@ -17,13 +17,15 @@ split-debuginfo = "packed"
 members = [
     "formats/miniser",
     "formats/twelf",
+    "hardware/rng/trng/rdrand",
+    "hardware/rng/trng/rdseed",
+    "hardware/rng/csprng/uefi",
     "kernel/alloc/buddy",
     "kernel/arch/x86_64",
     "kernel/boot/kldr",
-    "kernel/boot/uefi/uefi-rand",
     "kernel/main",
     "kernel/proto/startup-info",
-    "xtask",
+    "xtask", "services/rngseed/core",
 ]
 resolver = "2"
 

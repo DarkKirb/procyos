@@ -1,12 +1,12 @@
 [alias]
-xtask = "run -Z build-std=core,compiler_builtis,alloc,std --target x86_64-unknown-linux-gnu --release --package xtask --"
+xtask = "run --release --package xtask --"
 
 [build]
 rustflags = ["-Csymbol-mangling-version=v0"]
 
 [unstable]
 build-std-features = ["compiler-builtins-mem"]
-build-std = ["core", "compiler_builtins", "alloc"]
+#build-std = ["core", "compiler_builtins", "alloc"]
 
 [target.x86_64-unknown-uefi]
 rustflags = ["-C", "link-args=/debug:dwarf", "-Z", "emit-stack-sizes"]

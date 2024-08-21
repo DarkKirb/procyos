@@ -15,11 +15,13 @@ use elf::{
 use kernel_arch_x86_64::paging::PageFault;
 use log::{debug, info};
 use miniser::Serialize;
-use rand::Rng;
+use procyos_rngseed_core::RngSeeder;
+use rand::{Rng, SeedableRng};
 use startup_info::{KernelStartInfo, MemoryMapEntry};
 use sys::{jump_thunk, Pager, PAGE_SIZE};
 use thiserror::Error;
 use uefi::table::{boot::MemoryType, Boot, SystemTable};
+use uefi_rand::EfiRng;
 
 use crate::bump_alloc::BumpAllocator;
 

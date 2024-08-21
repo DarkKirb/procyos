@@ -1,0 +1,9 @@
+[package]
+name = "rdrand"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.22"
+rand_core = "0.6.4"
+raw-cpuid = "11.1.0"

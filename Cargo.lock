@@ -2083,8 +2083,12 @@ dependencies = [
  "miniser",
  "phf",
  "phf_codegen",
+ "procyos_rngseed_core",
  "rand",
+ "rand_blake3",
  "raw-cpuid 11.1.0",
+ "rdrand",
+ "rdseed",
  "spin",
  "startup-info",
  "thiserror-core",
@@ -2223,6 +2227,12 @@ name = "linux-raw-sys"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78b3ae25bc7c8c38cec158d1f2757ee79e9b3740fbc7ccf0e59e4b08d793fa89"
+
+[[package]]
+name = "load-buffer"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62e8eed8a05a8a1cc981ef9f5fa9583497c4070840f9037455da4a941d9f9487"
 
 [[package]]
 name = "lock_api"
@@ -2607,6 +2617,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "procyos_rngseed_core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "rand_core",
+]
+
+[[package]]
 name = "prodash"
 version = "28.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2662,6 +2680,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_blake3"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45d48e8429116b43969364faa3fd04138387e3d30ac875068fc4dbe54bb72d67"
+dependencies = [
+ "blake3",
+ "load-buffer",
+ "rand_core",
+]
+
+[[package]]
 name = "rand_chacha"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2705,6 +2734,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb9ee317cfe3fbd54b36a511efc1edd42e216903c9cd575e686dd68a2ba90d8d"
 dependencies = [
  "bitflags 2.6.0",
+]
+
+[[package]]
+name = "rdrand"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rand_core",
+ "raw-cpuid 11.1.0",
+]
+
+[[package]]
+name = "rdseed"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rand_core",
+ "raw-cpuid 11.1.0",
 ]
 
 [[package]]
@@ -3510,9 +3557,7 @@ name = "uefi-rand"
 version = "0.1.0"
 dependencies = [
  "log",
- "rand_chacha",
  "rand_core",
- "raw-cpuid 11.1.0",
  "uefi",
 ]
 

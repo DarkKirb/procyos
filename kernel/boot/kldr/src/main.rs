@@ -10,6 +10,8 @@
 extern crate alloc;
 
 use log::{error, info};
+use procyos_rngseed_core::RngSeeder;
+use rand::SeedableRng;
 use spin::Lazy;
 use twelf::{
     crypto::{KeyId, PublicVerifyingKey},
@@ -22,6 +24,7 @@ use uefi::{
     proto::media::fs::SimpleFileSystem,
     table::boot::{MemoryType, ScopedProtocol},
 };
+use uefi_rand::EfiRng;
 
 pub mod bump_alloc;
 pub mod elf_loader;
@@ -66,7 +69,20 @@ fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         } else {
             error!("Could not find a suitable executable in the kernel. Exiting.");
         }
-        let rng = uefi_rand::open_rng(bs).unwrap();
+        let mut reseeding = RngSeeder::default();
+        if let Ok(efirng) = EfiRng::new(system_table.boot_services()) {
+            reseeding.add_rng(efirng);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if let Some(rdrand) = rdrand::Rdrand::try_new() {
+                reseeding.add_rng(rdrand);
+            }
+            if let Some(rdseed) = rdseed::Rdseed::try_new() {
+                reseeding.add_rng(rdseed);
+            }
+        }
+        let rng = rand_blake3::Rng::from_rng(&mut reseeding).unwrap();
         (best_executable, rng)
     };
     elf_loader::load(
